@@ -1,0 +1,285 @@
+/*  Enemy Controller - Noah Nam & Jeff Brown
+ * 
+ *  Desc:   Defines base functionality of enemy bots
+ * 
+ */
+ 
+using UnityEngine;
+using System.Linq;
+using System;
+[RequireComponent(typeof(Rigidbody))]
+[RequireComponent(typeof(UnityEngine.AI.NavMeshAgent))]
+
+public abstract class EnemyController : SpellTarget {
+
+    [SerializeField] protected UnityEngine.AI.NavMeshAgent nma_agent;
+
+    //Added WANDER and FLEE states
+    protected enum State {CHASE, ATTACK, FROZEN, SLOWED, DIE, WANDER, FLEE, SUMMONING, DROPPING};
+	protected float f_damage;
+	protected State e_state;
+	protected State e_previousState; //Used for returning to the state previous to entering the AttackState.
+	protected State[] e_statusPriorityList = new State[] {State.FROZEN,State.SLOWED};
+	protected float f_canMove = 1f;
+
+	//The random destination the bot chooses when wandering
+	protected Vector3 v3_destination;
+
+	//The radius of which the bot will pick it's random destination
+	protected float f_wanderingRadius = Constants.EnemyStats.C_WanderingRadius;
+
+	//The a f_timer that keeps track of how long a bot has been wandering
+	protected float f_timer;
+
+	//The time limit for the bot to wander
+	protected float f_timeLimit = 4.0f;
+
+
+    override public void ApplySpellEffect(Constants.SpellStats.SpellType spell, Constants.Global.Color color, float damage, Vector3 direction) {
+        switch(spell) {
+            case Constants.SpellStats.SpellType.WIND:
+                rb.AddForce(direction * Constants.SpellStats.C_WindForce);
+                break;
+            case Constants.SpellStats.SpellType.ICE:
+                Freeze();
+                break;
+            case Constants.SpellStats.SpellType.ELECTRICITYAOE:
+                Slow();
+                break;
+        }
+        TakeDamage(damage);
+    }
+
+    override public void NegateSpellEffect(Constants.SpellStats.SpellType spell) {
+        if (spell == Constants.SpellStats.SpellType.ELECTRICITYAOE) {
+            StopCoroutine(cor_AOECoroutine);
+            Unslow();
+        }
+    }
+
+	protected virtual void EnterStateChase() {
+		e_state = State.CHASE;
+    }
+
+    protected virtual void UpdateChase() {}
+
+	protected virtual void EnterStateFlee() {
+		e_state = State.FLEE;
+    }
+
+    protected virtual void UpdateFlee() {}
+
+	protected virtual void EnterStateWander() {
+		e_state = State.WANDER;
+    }
+
+    protected virtual void UpdateWander() {
+    }
+
+	protected virtual void EnterStateSummoning() {
+		e_state = State.SUMMONING;
+    }
+
+    protected virtual void UpdateSummoning() {
+    }
+
+	protected virtual void EnterStateDropping() {
+		e_state = State.DROPPING;
+    }
+
+    protected virtual void UpdateDropping() {
+    }
+
+    protected virtual void EnterStateAttack() {
+		if(e_state != State.ATTACK)
+			e_previousState = e_state;
+        e_state = State.ATTACK;
+    }
+
+    protected virtual void UpdateAttack() {
+    }
+
+    protected virtual void DoAttack() {
+    }
+
+    protected void AttackOver() {
+        Debug.Log("attackover");
+		switch (e_previousState) {
+		case State.SLOWED:
+			UpdateSlowed();
+			break;
+		default:
+			EnterStateChase ();
+			break;
+		}
+    }
+
+    protected virtual void EnterStateDie() {
+		e_state = State.DIE;
+		this.enabled = false;
+		gameObject.SetActive(false);							  
+    }
+
+    protected virtual void UpdateDie() {
+        //riftController.DecreaseEnemies(e_side);
+		//Destroy(gameObject);
+		//gameObject.SetActive(false);
+    }
+	
+	public void TakeDamage(float damage){
+		//If for some reason this enemy is dead but it's still taking damage
+		//This if statement will prevent it
+		if (gameObject.activeSelf) {
+			maestro.PlayEnemyHit();
+			f_health -= damage;
+			//Debug.Log(i_health);
+			if(f_health <= 0f){
+				Debug.Log("death");
+				EnterStateDie();
+			}
+		}
+	}
+	
+	protected virtual void EnterStateFrozen() {
+		e_state = State.FROZEN;
+		f_canMove = 0;
+		UpdateSpeed();
+		//nma_agent.isStopped = true;
+		Invoke("Unfreeze", Constants.SpellStats.C_IceFreezeTime);
+    }
+
+    protected virtual void UpdateFrozen() {}
+	
+	public void Freeze(){
+		EnterStateFrozen();
+	}
+
+	private void Unfreeze(){
+		f_canMove = 1f;
+		UpdateSpeed();
+		EnterStateChase();
+	}
+	
+	protected virtual void EnterStateSlowed() {
+		if(e_statusPriorityList.Contains(e_state) && Array.IndexOf(e_statusPriorityList,State.SLOWED) > Array.IndexOf(e_statusPriorityList,e_state))
+			return;
+		e_state = State.SLOWED;
+		f_canMove = Constants.SpellStats.C_ElectricAOESlowDownMultiplier;
+		UpdateSpeed();
+    }
+
+    protected virtual void UpdateSlowed() {
+    }
+	
+	public void Slow(){
+		EnterStateSlowed();
+	}
+
+	public void Unslow(){
+		f_canMove = 1f;
+		UpdateSpeed();
+		EnterStateChase();
+	}
+	
+	private void UpdateSpeed(){
+		nma_agent.speed = riftController.EnemySpeed * f_canMove;
+		//nma_agent.speed = riftController.f_enemySpeed * f_canMove;
+		//nma_agent.acceleration = nma_agent.acceleration* (Constants.EnviroStats.C_EnemySpeed / 3.5f) * f_canMove;
+	}
+
+	//If the bot tries to move to a destination that's out of bounds
+	//This will reset the destination with in bounds
+	protected void CheckOutOfBounds() {
+		if (e_startSide == Constants.Global.Side.LEFT) {
+			if (v3_destination.x < -1*Constants.EnemyStats.C_MapBoundryXAxis+1) {
+				v3_destination.x = -1*Constants.EnemyStats.C_MapBoundryXAxis+1;
+			}
+			else if (v3_destination.x > -1.0f) {
+				v3_destination.x = -1.0f;
+			}
+		}
+		else {
+			if (v3_destination.x > Constants.EnemyStats.C_MapBoundryXAxis-1) {
+				v3_destination.x = Constants.EnemyStats.C_MapBoundryXAxis-1;
+			}
+			else if (v3_destination.x < 1.0f) {
+				v3_destination.x = 1.0f;
+			}
+		}
+
+		if (v3_destination.z > Constants.EnemyStats.C_MapBoundryZAxis-1) {
+			v3_destination.z = Constants.EnemyStats.C_MapBoundryZAxis-1;
+		}
+		else if (v3_destination.z < -1*Constants.EnemyStats.C_MapBoundryZAxis+1) {
+			v3_destination.z = -1*Constants.EnemyStats.C_MapBoundryZAxis+1;
+		}
+	}
+
+	public virtual void Init(Constants.Global.Side side) {
+		this.enabled = true;
+        riftController = RiftController.Instance;   // Init() is called before Start(), these must be set here (repeatedly...)
+        maestro = Maestro.Instance;
+        EnterStateWander();
+		e_startSide = side;
+	}
+
+	void Start() {
+		f_damage = Constants.EnemyStats.C_EnemyDamage;
+
+		//nma_agent.speed = Constants.EnemyStats.C_EnemyBaseSpeed;
+
+		nma_agent.acceleration = nma_agent.acceleration* (Constants.EnemyStats.C_EnemyBaseSpeed / 3.5f);
+
+		//Initializing the f_timer, destination, and f_wanderingRadius
+		f_timer = 0.0f;
+		v3_destination = transform.position;
+
+		EnterStateWander ();
+    }
+
+	void OnDisable() {
+		if (this.enabled) {
+			Debug.Log("OnDisable");
+			EnterStateDie();
+		}
+	}				 
+	// Update is called once per frame
+	protected virtual void Update () {
+		/*
+		if(f_health <= 0f){
+			Debug.Log("death");
+			EnterStateDie();
+		}
+		*/
+
+		switch (e_state) {
+		case State.CHASE:
+			UpdateChase ();
+			break;
+		case State.WANDER:
+			UpdateWander ();
+			break;
+		case State.FLEE:
+			UpdateFlee ();
+			break;
+		case State.SUMMONING:
+			UpdateSummoning ();
+			break;
+		case State.DROPPING:
+			UpdateDropping ();
+			break;
+		case State.ATTACK:
+			UpdateAttack();
+			break;
+		case State.FROZEN:
+			UpdateFrozen();
+			break;
+		case State.SLOWED:
+			UpdateSlowed();
+			break;
+		case State.DIE:
+			UpdateDie ();
+			break;
+		}
+    }
+}
